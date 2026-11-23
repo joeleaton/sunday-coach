@@ -1,0 +1,682 @@
+{
+  "name": "Sunday Coach",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "weeks",
+              "triggerAtHour": 19
+            }
+          ]
+        }
+      },
+      "id": "250e983e-362f-47db-b9e9-3fddf5e32cd3",
+      "name": "Every Sunday 7pm",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        0,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "getAll",
+        "projectRef": "YOUR_SUPABASE_PROJECT_1",
+        "tableId": "activities",
+        "returnAll": true,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "start_time",
+              "condition": "gte",
+              "keyValue": "={{ $now.minus({ days: 7 }).toISO() }}"
+            }
+          ]
+        }
+      },
+      "id": "7f4a3e6d-67e4-4f34-b702-e5ce2f209b78",
+      "name": "Get week from JAVA",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        224,
+        112
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseOAuth2Api": {
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "getAll",
+        "projectRef": "YOUR_SUPABASE_PROJECT_1",
+        "tableId": "fitness_snapshot",
+        "limit": 1,
+        "orderBy": "day.desc",
+        "filterType": "none"
+      },
+      "id": "a7c03794-8413-481c-8a90-fb0b2d026dd9",
+      "name": "Get training load",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        448,
+        112
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseOAuth2Api": {
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "getAll",
+        "projectRef": "YOUR_SUPABASE_PROJECT_2",
+        "tableId": "workouts",
+        "returnAll": true,
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "athlete_id",
+              "condition": "eq",
+              "keyValue": "YOUR_ATHLETE_ID"
+            },
+            {
+              "keyName": "date",
+              "condition": "gte",
+              "keyValue": "={{ $now.startOf(\"week\").toISODate() }}"
+            },
+            {
+              "keyName": "date",
+              "condition": "lte",
+              "keyValue": "={{ $now.startOf(\"week\").plus({ days: 13 }).toISODate() }}"
+            }
+          ]
+        }
+      },
+      "id": "86e92834-0ebd-46ae-a9b2-079070fe3080",
+      "name": "Get next week's plan",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        672,
+        112
+      ],
+      "executeOnce": true,
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseOAuth2Api": {
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ---- Settings ----\nconst FORM_THRESHOLD = -20;           // ease next week if form is below this\nconst MARATHON_PACE_SEC = 6 * 60 + 6; // 6:06 per mile = 2:40 marathon pace\n\nconst clean = (items) => items.map(i => i.json).filter(r => r && Object.keys(r).length > 0);\nconst activities = clean($('Get week from JAVA').all());\nconst load = clean($('Get training load').all())[0] || {};\nconst plan = clean($(\"Get next week's plan\").all());\n\nconst round1 = (n) => Math.round((Number(n) || 0) * 10) / 10;\nconst toPace = (sec) => {\n  if (!sec || !isFinite(sec)) return null;\n  const m = Math.floor(sec / 60);\n  const s = Math.round(sec % 60);\n  return m + ':' + String(s).padStart(2, '0');\n};\n\n// This week's activities from JAVA (distance_m in metres, moving_s in seconds); skip deleted ones\nconst sessions = activities.filter(a => !a.deleted_at).map(a => {\n  const miles = (Number(a.distance_m) || 0) / 1609.344;\n  const secs = Number(a.moving_s) || 0;\n  const paceSec = miles > 0 ? secs / miles : null;\n  return {\n    id: a.id,\n    date: String(a.start_time || '').slice(0, 10),\n    type: a.sport,\n    name: a.name,\n    miles: round1(miles),\n    moving_time_min: Math.round(secs / 60),\n    avg_pace_per_mile: toPace(paceSec),\n    avg_hr: a.avg_hr ?? null,\n    _paceSec: paceSec,\n  };\n});\nconst runs = sessions.filter(s => String(s.type || '').toLowerCase().includes('run'));\nconst totalMiles = runs.reduce((sum, r) => sum + r.miles, 0);\nconst longest = runs.reduce((best, r) => (r.miles > (best ? best.miles : 0) ? r : best), null);\nconst mpMiles = runs.filter(r => r._paceSec && r._paceSec <= MARATHON_PACE_SEC).reduce((sum, r) => sum + r.miles, 0);\n\n// Split the plan into this week (for actual vs planned) and next week\nconst nextMonday = $now.startOf('week').plus({ weeks: 1 }).toISODate();\nconst pastPlan = plan.filter(p => String(p.date).slice(0, 10) < nextMonday);\nconst nextWeek = plan\n  .filter(p => String(p.date).slice(0, 10) >= nextMonday)\n  .map(p => ({ id: p.id, date: String(p.date).slice(0, 10), workout_type: p.workout_type, name: p.name, planned_miles: p.distance != null ? Number(p.distance) : null, description: p.description || '' }));\nconst plannedMiles = pastPlan.reduce((sum, p) => sum + (Number(p.distance) || 0), 0);\n\nconst fitness = Number(load.fitness);\nconst fatigue = Number(load.fatigue);\nconst form = load.form != null ? Number(load.form) : fitness - fatigue;\n\nreturn [{\n  json: {\n    form_threshold: FORM_THRESHOLD,\n    summary: {\n      goal: 'London Marathon April 2027, 2:40 (6:06/mile)',\n      total_run_miles: round1(totalMiles),\n      number_of_runs: runs.length,\n      longest_run: longest ? { id: longest.id, date: longest.date, miles: longest.miles, avg_pace_per_mile: longest.avg_pace_per_mile } : null,\n      miles_at_or_faster_than_marathon_pace: round1(mpMiles),\n      actual_vs_planned_miles: { actual: round1(totalMiles), planned: round1(plannedMiles), difference: round1(totalMiles - plannedMiles) },\n      training_load: { fitness: round1(fitness), fatigue: round1(fatigue), form: round1(form) },\n      this_week_activities: sessions.map(({ _paceSec, ...rest }) => rest),\n      next_week_sessions: nextWeek,\n    },\n  },\n}];"
+      },
+      "id": "d08ae946-db8b-46f2-837a-6b5fa3e0a5f6",
+      "name": "Crunch the numbers",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Here is my training summary for the week:\n\n{{ JSON.stringify($json.summary, null, 2) }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "=You are an experienced marathon coach. The athlete is targeting 2:40 at the London Marathon in April 2027. Review the past week against the plan and the training load. Write a short, direct review for a 60-second voice note: what went well, one thing to watch, and one specific change for next week. Use miles and pace per mile. No more than 150 words. Be honest and practical. If form is below {{ $json.form_threshold }}, choose the hardest session next week to ease.\n\nUse the \"Look up activity\" tool if you need to check an unusual session in detail (pass its id).\nReturn \"review\" (the voice-note text) and \"ease_session_id\" (the id from next_week_sessions of the session to ease, or null if no session needs easing)."
+        }
+      },
+      "id": "b296833b-4038-420c-90d2-4a75c93ea936",
+      "name": "Coach",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        1184,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "model": {
+          "__rl": true,
+          "mode": "list",
+          "value": "gpt-5.4-mini",
+          "cachedResultName": "gpt-5.4-mini"
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "id": "572ce898-adff-4980-860e-fa7e6a2084da",
+      "name": "Chat model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "position": [
+        1120,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Read one activity from the JAVA training log by its id, to check an unusual session in detail.",
+        "authentication": "oAuth2",
+        "operation": "get",
+        "projectRef": "YOUR_SUPABASE_PROJECT_1",
+        "tableId": "activities",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "keyValue": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('activity_id', 'The id of the activity to look up') }}"
+            }
+          ]
+        }
+      },
+      "id": "224f5994-244c-4aac-ad4e-567ace59ede0",
+      "name": "Look up activity",
+      "type": "n8n-nodes-base.supabaseTool",
+      "typeVersion": 1,
+      "position": [
+        1248,
+        336
+      ],
+      "credentials": {
+        "supabaseOAuth2Api": {
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"review\": { \"type\": \"string\", \"description\": \"Voice-note review, max 150 words\" },\n    \"ease_session_id\": { \"type\": [\"string\", \"integer\", \"null\"], \"description\": \"id of next week's session to ease, or null\" }\n  },\n  \"required\": [\"review\", \"ease_session_id\"]\n}"
+      },
+      "id": "6d223865-7a8a-4d61-926e-2b07c90cb46d",
+      "name": "Review format",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1376,
+        336
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ String($json.output.ease_session_id ?? \"\") }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            },
+            {
+              "leftValue": "={{ $(\"Crunch the numbers\").first().json.summary.training_load.form }}",
+              "rightValue": "={{ $(\"Crunch the numbers\").first().json.form_threshold }}",
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "7864df76-acd9-448b-a238-52a34dd424ff",
+      "name": "Too tired?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1584,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "authentication": "oAuth2",
+        "operation": "update",
+        "projectRef": "YOUR_SUPABASE_PROJECT_2",
+        "tableId": "workouts",
+        "matchType": "allFilters",
+        "filters": {
+          "conditions": [
+            {
+              "keyName": "id",
+              "condition": "eq",
+              "keyValue": "={{ $json.output.ease_session_id }}"
+            },
+            {
+              "keyName": "athlete_id",
+              "condition": "eq",
+              "keyValue": "YOUR_ATHLETE_ID"
+            }
+          ]
+        },
+        "fieldsUi": {
+          "fieldValues": [
+            {
+              "fieldId": "workout_type",
+              "fieldValue": "Easy run"
+            },
+            {
+              "fieldId": "distance",
+              "fieldValue": "={{ (() => { const d = $(\"Crunch the numbers\").first().json.summary.next_week_sessions.find(s => String(s.id) === String($json.output.ease_session_id))?.planned_miles; return d ? Math.round(d * 0.7 * 10) / 10 : null; })() }}"
+            },
+            {
+              "fieldId": "description",
+              "fieldValue": "={{ ($(\"Crunch the numbers\").first().json.summary.next_week_sessions.find(s => String(s.id) === String($json.output.ease_session_id))?.description || \"\") + \" (eased by Sunday Coach)\" }}"
+            }
+          ]
+        }
+      },
+      "id": "42933e22-73e5-448d-be25-dc516ee2f544",
+      "name": "Ease next week",
+      "type": "n8n-nodes-base.supabase",
+      "typeVersion": 1,
+      "position": [
+        1808,
+        192
+      ],
+      "alwaysOutputData": true,
+      "credentials": {
+        "supabaseOAuth2Api": {
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "# Sunday Coach \nThis is my weekly review of my marathon training. Reads my own apps' data (JAVA and Elevate, on Supabase), asks an AI coach agent for a review, eases next week's hardest session if I'm too fatigued, and sends a voice note in my ElevenLabs-cloned voice to me via Telegram. Neat huh!?",
+        "height": 260,
+        "width": 520,
+        "color": 4
+      },
+      "id": "fd7dd4fd-5e4f-4e4f-9c92-9ac798536882",
+      "name": "Sticky Overview",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        256,
+        -288
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 1. Collect\nThis week from JAVA, training load, and the Elevate plan",
+        "height": 224,
+        "width": 608,
+        "color": 5
+      },
+      "id": "8895d48a-f6fa-47bc-b21e-654d0bc6ef1c",
+      "name": "Sticky Collect",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        192,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 2. Analyse\nWeekly totals vs plan and 2:40 pace",
+        "height": 224,
+        "width": 160,
+        "color": 6
+      },
+      "id": "a418e7fb-f011-4cd3-b03f-5b4b18444c06",
+      "name": "Sticky Analyse",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        864,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 3. Coach\nAI coach reviews the week",
+        "height": 432,
+        "width": 400,
+        "color": 3
+      },
+      "id": "e78007fe-9b0c-4701-a750-df966f024e0f",
+      "name": "Sticky Coach",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1088,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 4. Adjust\nEase the hardest session if form is low",
+        "height": 352,
+        "width": 608,
+        "color": 2
+      },
+      "id": "c199f7e8-acfe-4b5d-9a70-2e55b9d0fbe1",
+      "name": "Sticky Adjust",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        1552,
+        16
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## 5. Deliver\nVoice note in my cloned voice + text",
+        "height": 224,
+        "width": 608,
+        "color": 7
+      },
+      "id": "a5ad4c36-9ab0-496c-8cef-1a57765cef12",
+      "name": "Sticky Deliver",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        2224,
+        16
+      ]
+    },
+    {
+      "parameters": {},
+      "id": "5c7589b2-cc6e-4622-9616-97385f107fdd",
+      "name": "Merge",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2032,
+        112
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.elevenlabs.io/v1/text-to-speech/YOUR_ELEVENLABS_VOICE_ID",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpTemplatedCustomAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "text",
+              "value": "={{ $(\"Coach\").first().json.output.review }}"
+            },
+            {
+              "name": "model_id",
+              "value": "eleven_multilingual_v2"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "2ce2bac1-1fb6-431f-bb65-3b629e0dfc6d",
+      "name": "Make voice note",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        2256,
+        112
+      ],
+      "executeOnce": true,
+      "credentials": {
+        "httpTemplatedCustomAuth": {
+          "name": "Simplified Custom Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "sendAudio",
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "binaryData": true,
+        "additionalFields": {
+          "caption": "Sunday Coach: your week",
+          "fileName": "sunday-coach.mp3",
+          "title": "Sunday Coach"
+        }
+      },
+      "id": "579f9b77-36ff-4032-869c-93e12a1a6461",
+      "name": "Send voice note",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2480,
+        112
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "YOUR_TELEGRAM_CHAT_ID",
+        "text": "={{ $(\"Coach\").first().json.output.review }}",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "c2e98fba-bab8-449f-94b6-27d57f203c4b",
+      "name": "Send review text",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2704,
+        112
+      ],
+      "credentials": {
+        "telegramApi": {
+          "name": "Telegram account"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Every Sunday 7pm": {
+      "main": [
+        [
+          {
+            "node": "Get week from JAVA",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get week from JAVA": {
+      "main": [
+        [
+          {
+            "node": "Get training load",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get training load": {
+      "main": [
+        [
+          {
+            "node": "Get next week's plan",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get next week's plan": {
+      "main": [
+        [
+          {
+            "node": "Crunch the numbers",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Crunch the numbers": {
+      "main": [
+        [
+          {
+            "node": "Coach",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Coach": {
+      "main": [
+        [
+          {
+            "node": "Too tired?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Coach",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Look up activity": {
+      "ai_tool": [
+        [
+          {
+            "node": "Coach",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Review format": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Coach",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Too tired?": {
+      "main": [
+        [
+          {
+            "node": "Ease next week",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Ease next week": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Make voice note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Make voice note": {
+      "main": [
+        [
+          {
+            "node": "Send voice note",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send voice note": {
+      "main": [
+        [
+          {
+            "node": "Send review text",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "Europe/London"
+  },
+  "tags": []
+}
