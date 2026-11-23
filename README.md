@@ -1,4 +1,4 @@
-# 🏃 Sunday Coach: an AI marathon coach that talks to me in my own voice
+# Sunday Coach: an AI marathon coach that talks to me in my own voice
 
 Every Sunday at 7pm, an [n8n](https://n8n.io) workflow reviews my week of marathon training, **adjusts next week's plan if I'm overcooked**, and sends a **short voice note to my phone on Telegram, spoken in my own cloned voice** (ElevenLabs).
 
