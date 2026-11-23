@@ -79,8 +79,8 @@ The Supabase table schemas belong to my own apps. To use a different source (Str
 ## Repo layout
 
 ```
-workflows/sunday-coach.json   # sanitised n8n export (backed up automatically)
+workflows/sunday-coach.json   # sanitised n8n export
 scripts/sanitize.js           # strips IDs, chat IDs and project refs before publishing
 ```
 
-This repo is kept in sync with my live n8n instance. Personal identifiers are removed by `scripts/sanitize.js` before every commit.
+Personal identifiers (chat IDs, project refs, credential IDs, voice ID) are removed by `scripts/sanitize.js` before publishing. To re-export after changes: download the workflow from n8n, then run `node scripts/sanitize.js export.json > workflows/sunday-coach.json`.
